@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Hidden Camera Detector</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Share+Tech+Mono&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a; /* slate-900 */
+            color: #f8fafc; /* slate-50 */
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .mono-font {
+            font-family: 'Share Tech Mono', monospace;
+        }
+
+        .radar-sweep {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: conic-gradient(from 0deg, transparent 70%, rgba(34, 197, 94, 0.4) 100%);
+            border-radius: 50%;
+            animation: sweep 4s linear infinite;
+            pointer-events: none;
+            display: none;
+        }
+
+        @keyframes sweep {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .scanning-active .radar-sweep {
+            display: block;
+        }
+
+        #video-container {
+            position: relative;
+            width: 100%;
+            background: #000;
+            border-radius: 0.75rem;
+            overflow: hidden;
+            aspect-ratio: 3/4;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            border: 1px solid #334155;
+        }
+
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        #overlay-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        .glass-panel {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(15, 23, 42, 1); 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #475569; 
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col antialiased">
+
+    <!-- Header -->
+    <header class="glass-panel sticky top-0 z-50 p-4 border-b border-slate-700 flex justify-between items-center shadow-md">
+        <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center border border-slate-600">
+                <i class="fa-solid fa-shield-halved text-green-500 text-xl" id="status-icon"></i>
+            </div>
+            <div>
+                <h1 class="font-bold text-lg leading-tight tracking-wide">LensGuard</h1>
+                <div class="flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-slate-500" id="status-dot"></span>
+                    <span class="text-xs text-slate-400 font-semibold uppercase tracking-wider mono-font" id="status-text">System Standby</span>
+                </div>
+            </div>
+        </div>
+        <button id="help-btn" class="p-2 text-slate-400 hover:text-white transition-colors">
+            <i class="fa-regular fa-circle-question text-xl"></i>
+        </button>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex-grow p-4 flex flex-col max-w-2xl mx-auto w-full gap-6">
+
+        <!-- Viewport -->
+        <div id="video-container" class="relative group">
+            <video id="camera-stream" playsinline autoplay muted></video>
+            <canvas id="overlay-canvas"></canvas>
+            
+            <!-- Idle State Overlay -->
+            <div id="idle-overlay" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/90 z-20">
+                <i class="fa-solid fa-camera text-4xl text-slate-600 mb-4"></i>
+                <p class="text-slate-400 text-sm max-w-[250px] text-center">Camera is currently inactive. Start scanning to detect unusual reflections.</p>
+            </div>
+
+            <!-- Detection Stats Overlay -->
+            <div id="stats-overlay" class="absolute top-2 left-2 right-2 flex justify-between items-start z-30 hidden pointer-events-none">
+                <div class="bg-black/60 px-3 py-1.5 rounded-md border border-slate-600/50 backdrop-blur-sm">
+                    <p class="text-[10px] text-slate-400 uppercase tracking-wide">Reflections</p>
+                    <p class="text-xl font-bold text-white mono-font" id="reflection-count">0</p>
+                </div>
+                <div class="bg-black/60 px-2 py-1 rounded border border-red-500/50 backdrop-blur-sm hidden" id="recording-indicator">
+                    <div class="flex items-center gap-2">
+                        <div class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></div>
+                        <span class="text-[10px] font-bold text-red-500 uppercase tracking-wider">Live Analysis</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Crosshair overlay -->
+            <div class="absolute inset-0 flex items-center justify-center pointer-events-none hidden" id="crosshair">
+                <div class="w-16 h-16 border-2 border-green-500/30 rounded-full relative">
+                    <div class="absolute top-1/2 left-0 w-full h-px bg-green-500/30"></div>
+                    <div class="absolute left-1/2 top-0 w-px h-full bg-green-500/30"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="glass-panel p-4 rounded-xl flex flex-col gap-4">
+            <div class="grid grid-cols-2 gap-3">
+                <button id="start-btn" class="bg-green-600 hover:bg-green-500 text-white py-4 rounded-lg font-bold shadow-[0_0_15px_rgba(22,163,74,0.4)] transition-all active:scale-95 flex items-center justify-center gap-2">
+                    <i class="fa-solid fa-power-off"></i> Start Scanning
+                </button>
+                <button id="stop-btn" class="bg-slate-700 text-slate-300 py-4 rounded-lg font-bold transition-all opacity-50 cursor-not-allowed flex items-center justify-center gap-2" disabled>
+                    <i class="fa-solid fa-stop"></i> Stop Camera
+                </button>
+            </div>
+            
+            <div class="flex justify-between border-t border-slate-700/50 pt-4 mt-1">
+                <button id="flip-btn" class="flex flex-col items-center gap-1 text-slate-400 hover:text-white disabled:opacity-30 transition-colors p-2" disabled>
+                    <div class="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center border border-slate-700">
+                        <i class="fa-solid fa-camera-rotate"></i>
+                    </div>
+                    <span class="text-[10px] font-semibold uppercase tracking-wide">Flip Cam</span>
+                </button>
+                <button id="torch-btn" class="flex flex-col items-center gap-1 text-slate-400 hover:text-white disabled:opacity-30 transition-colors p-2" disabled>
+                    <div class="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center border border-slate-700" id="torch-icon-container">
+                        <i class="fa-solid fa-lightbulb"></i>
+                    </div>
+                    <span class="text-[10px] font-semibold uppercase tracking-wide">Flashlight</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Security Guide & Limitations -->
+        <div class="glass-panel rounded-xl overflow-hidden">
+            <div class="p-4 border-b border-slate-700 bg-slate-800/50">
+                <h2 class="font-semibold flex items-center gap-2"><i class="fa-solid fa-book-open text-blue-400"></i> Inspection Guide</h2>
+            </div>
+            <div class="p-4 text-sm text-slate-300 space-y-4">
+                <p>Hidden cameras rely on lenses that curve to capture light. These lenses often reflect light back as a tiny, bright dot.</p>
+                <ul class="space-y-2 list-disc pl-5">
+                    <li><strong>Step 1:</strong> Dim the lights in the room as much as possible.</li>
+                    <li><strong>Step 2:</strong> Start scanning and turn on the flashlight (if supported).</li>
+                    <li><strong>Step 3:</strong> Slowly pan the camera across suspicious items: smoke detectors, clocks, mirrors, vents, and plush toys.</li>
+                    <li><strong>Step 4:</strong> Look for sharp, bright pinpoints of light blinking or reflecting back on the screen.</li>
+                </ul>
+                <div class="bg-amber-900/30 border border-amber-700/50 p-3 rounded-lg flex gap-3 text-amber-200 text-xs leading-relaxed">
+                    <i class="fa-solid fa-triangle-exclamation text-amber-500 text-lg flex-shrink-0 mt-0.5"></i>
+                    <div>
+                        <strong>Disclaimer:</strong> This tool highlights bright spots and reflections locally in your browser. It <strong>cannot</strong> definitively prove the existence or absence of a hidden camera. False positives (mirrors, glass, dust) will occur. Do not rely solely on this app for your physical security.
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- History -->
+        <div class="glass-panel rounded-xl overflow-hidden mb-8">
+             <div class="p-4 border-b border-slate-700 bg-slate-800/50 flex justify-between items-center">
+                <h2 class="font-semibold flex items-center gap-2"><i class="fa-solid fa-clock-rotate-left text-purple-400"></i> Scan History</h2>
+                <button id="clear-history-btn" class="text-xs text-slate-500 hover:text-red-400 transition-colors uppercase font-bold tracking-wider">Clear</button>
+            </div>
+            <div class="p-0">
+                <ul id="history-list" class="divide-y divide-slate-700/50 max-h-48 overflow-y-auto">
+                    <!-- History items injected here -->
+                    <li class="p-4 text-center text-sm text-slate-500 italic">No previous scans found.</li>
+                </ul>
+            </div>
+        </div>
+
+    </main>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- DOM Elements ---
+            const video = document.getElementById('camera-stream');
+            const overlayCanvas = document.getElementById('overlay-canvas');
+            const ctx = overlayCanvas.getContext('2d');
+            const startBtn = document.getElementById('start-btn');
+            const stopBtn = document.getElementById('stop-btn');
+            const flipBtn = document.getElementById('flip-btn');
+            const torchBtn = document.getElementById('torch-btn');
+            const torchIconContainer = document.getElementById('torch-icon-container');
+            const idleOverlay = document.getElementById('idle-overlay');
+            const statsOverlay = document.getElementById('stats-overlay');
+            const crosshair = document.getElementById('crosshair');
+            const statusIcon = document.getElementById('status-icon');
+            const statusDot = document.getElementById('status-dot');
+            const statusText = document.getElementById('status-text');
+            const reflectionCount = document.getElementById('reflection-count');
+            const recordingIndicator = document.getElementById('recording-indicator');
+            const historyList = document.getElementById('history-list');
+            const clearHistoryBtn = document.getElementById('clear-history-btn');
+
+            // --- State Variables ---
+            let stream = null;
+            let currentFacingMode = 'environment';
+            let isScanning = false;
+            let torchEnabled = false;
+            let analysisInterval = null;
+            let maxReflectionsInSession = 0;
+            let sessionStartTime = null;
+
+            // Offscreen canvas for performance analysis (downscaled)
+            const analysisCanvas = document.createElement('canvas');
+            const analysisCtx = analysisCanvas.getContext('2d');
+            const ANALYSIS_SIZE = 150; // Analyze at 150x150 resolution
+            analysisCanvas.width = ANALYSIS_SIZE;
+            analysisCanvas.height = ANALYSIS_SIZE;
+
+            // --- Initialize ---
+            loadHistory();
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
+
+            function resizeCanvas() {
+                const rect = video.getBoundingClientRect();
+                overlayCanvas.width = rect.width;
+                overlayCanvas.height = rect.height;
+            }
+
+            // --- Camera Management ---
+            async function startCamera() {
+                try {
+                    // Stop existing stream if any
+                    stopMediaTracks();
+
+                    const constraints = {
+                        video: {
+                            facingMode: currentFacingMode,
+                            width: { ideal: 1280 },
+                            height: { ideal: 720 }
+                        },
+                        audio: false
+                    };
+
+                    stream = await navigator.mediaDevices.getUserMedia(constraints);
+                    video.srcObject = stream;
+                    
+                    video.onloadedmetadata = () => {
+                        video.play();
+                        resizeCanvas();
+                        beginScanning();
+                    };
+
+                    // Check capabilities for flashlight (Torch)
+                    const track = stream.getVideoTracks()[0];
+                    const capabilities = track.getCapabilities();
+                    
+                    if (capabilities.torch) {
+                        torchBtn.disabled = false;
+                    } else {
+                        torchBtn.disabled = true;
+                        torchEnabled = false;
+                        updateTorchUI();
+                    }
+
+                    flipBtn.disabled = false;
+
+                } catch (err) {
+                    console.error("Camera access error:", err);
+                    alert("Could not access camera. Please ensure permissions are granted and you are on a secure (HTTPS) connection.");
+                    resetUI();
+                }
+            }
+
+            function stopMediaTracks() {
+                if (stream) {
+                    stream.getTracks().forEach(track => {
+                        track.stop();
+                    });
+                    stream = null;
+                }
+                video.srcObject = null;
+            }
+
+            function beginScanning() {
+                isScanning = true;
+                maxReflectionsInSession = 0;
+                sessionStartTime = new Date();
+                
+                // Update UI
+                idleOverlay.classList.add('hidden');
+                statsOverlay.classList.remove('hidden');
+                crosshair.classList.remove('hidden');
+                recordingIndicator.classList.remove('hidden');
+                
+                startBtn.disabled = true;
+                startBtn.classList.add('opacity-50', 'cursor-not-allowed');
+                stopBtn.disabled = false;
+                stopBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                stopBtn.classList.add('bg-red-600', 'hover:bg-red-500', 'text-white', 'shadow-[0_0_15px_rgba(220,38,38,0.4)]');
+                stopBtn.classList.remove('bg-slate-700', 'text-slate-300');
+
+                statusIcon.className = "fa-solid fa-radar text-green-500 text-xl animate-spin-slow";
+                statusDot.className = "w-2 h-2 rounded-full bg-green-500 animate-pulse";
+                statusText.innerText = "Active Scanning";
+                statusText.className = "text-xs text-green-400 font-semibold uppercase tracking-wider mono-font";
+
+                // Start analysis loop
+                analyzeFrame();
+            }
+
+            function stopScanning() {
+                if (!isScanning) return;
+                
+                isScanning = false;
+                if (analysisInterval) cancelAnimationFrame(analysisInterval);
+                ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+                
+                stopMediaTracks();
+                
+                // Save history
+                if (sessionStartTime) {
+                    const duration = Math.round((new Date() - sessionStartTime) / 1000); // in seconds
+                    if (duration > 2) { // Only save if scanned for more than 2 seconds
+                        saveToHistory(maxReflectionsInSession, duration);
+                    }
+                }
+
+                resetUI();
+            }
+
+            function resetUI() {
+                idleOverlay.classList.remove('hidden');
+                statsOverlay.classList.add('hidden');
+                crosshair.classList.add('hidden');
+                recordingIndicator.classList.add('hidden');
+
+                startBtn.disabled = false;
+                startBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                stopBtn.disabled = true;
+                stopBtn.classList.add('opacity-50', 'cursor-not-allowed', 'bg-slate-700', 'text-slate-300');
+                stopBtn.classList.remove('bg-red-600', 'hover:bg-red-500', 'text-white', 'shadow-[0_0_15px_rgba(220,38,38,0.4)]');
+                
+                flipBtn.disabled = true;
+                torchBtn.disabled = true;
+                torchEnabled = false;
+                updateTorchUI();
+
+                statusIcon.className = "fa-solid fa-shield-halved text-green-500 text-xl";
+                statusDot.className = "w-2 h-2 rounded-full bg-slate-500";
+                statusText.innerText = "System Standby";
+                statusText.className = "text-xs text-slate-400 font-semibold uppercase tracking-wider mono-font";
+                reflectionCount.innerText = "0";
+            }
+
+            // --- Toggle Controls ---
+            flipBtn.addEventListener('click', () => {
+                if(!isScanning) return;
+                currentFacingMode = currentFacingMode === 'environment' ? 'user' : 'environment';
+                torchEnabled = false; // Reset torch on flip
+                updateTorchUI();
+                startCamera(); // Restart with new facing mode
+            });
+
+            torchBtn.addEventListener('click', async () => {
+                if (!stream || !isScanning) return;
+                const track = stream.getVideoTracks()[0];
+                const capabilities = track.getCapabilities();
+                
+                if (capabilities.torch) {
+                    torchEnabled = !torchEnabled;
+                    try {
+                        await track.applyConstraints({
+                            advanced: [{ torch: torchEnabled }]
+                        });
+                        updateTorchUI();
+                    } catch (err) {
+                        console.error("Error toggling torch:", err);
+                        torchEnabled = false;
+                        updateTorchUI();
+                    }
+                }
+            });
+
+            function updateTorchUI() {
+                if (torchEnabled) {
+                    torchIconContainer.classList.remove('bg-slate-800', 'border-slate-700');
+                    torchIconContainer.classList.add('bg-yellow-500/20', 'border-yellow-500', 'text-yellow-400');
+                } else {
+                    torchIconContainer.classList.add('bg-slate-800', 'border-slate-700');
+                    torchIconContainer.classList.remove('bg-yellow-500/20', 'border-yellow-500', 'text-yellow-400');
+                }
+            }
+
+            startBtn.addEventListener('click', startCamera);
+            stopBtn.addEventListener('click', stopScanning);
+
+            // --- Image Analysis (Reflection Detection) ---
+            function analyzeFrame() {
+                if (!isScanning || video.videoWidth === 0) return;
+
+                // Clear previous drawings
+                ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+
+                try {
+                    // Draw video to low-res analysis canvas
+                    analysisCtx.drawImage(video, 0, 0, ANALYSIS_SIZE, ANALYSIS_SIZE);
+                    const imageData = analysisCtx.getImageData(0, 0, ANALYSIS_SIZE, ANALYSIS_SIZE);
+                    const data = imageData.data;
+
+                    let brightSpots = [];
+                    const threshold = 245; // Very close to pure white
+                    
+                    // Simple pixel iteration to find extremely bright spots
+                    for (let y = 0; y < ANALYSIS_SIZE; y += 2) { // Step by 2 for performance
+                        for (let x = 0; x < ANALYSIS_SIZE; x += 2) {
+                            const index = (y * ANALYSIS_SIZE + x) * 4;
+                            const r = data[index];
+                            const g = data[index + 1];
+                            const b = data[index + 2];
+                            
+                            // Check if pixel is very bright (potential reflection)
+                            if (r > threshold && g > threshold && b > threshold) {
+                                brightSpots.push({x, y});
+                            }
+                        }
+                    }
+
+                    // Cluster proximity (rudimentary grouping to count distinct reflections)
+                    let clusters = [];
+                    const distanceThreshold = 10; // group spots within 10 low-res pixels
+
+                    brightSpots.forEach(spot => {
+                        let addedToCluster = false;
+                        for (let cluster of clusters) {
+                            const dx = cluster.x - spot.x;
+                            const dy = cluster.y - spot.y;
+                            if (Math.sqrt(dx*dx + dy*dy) < distanceThreshold) {
+                                cluster.points.push(spot);
+                                // Update cluster center
+                                cluster.x = (cluster.x * (cluster.points.length - 1) + spot.x) / cluster.points.length;
+                                cluster.y = (cluster.y * (cluster.points.length - 1) + spot.y) / cluster.points.length;
+                                addedToCluster = true;
+                                break;
+                            }
+                        }
+                        if (!addedToCluster) {
+                            clusters.push({ x: spot.x, y: spot.y, points: [spot] });
+                        }
+                    });
+
+                    // Filter out massive clusters (likely windows/lamps, not lenses)
+                    const validClusters = clusters.filter(c => c.points.length > 0 && c.points.length < 20);
+
+                    // Update UI stats
+                    reflectionCount.innerText = validClusters.length;
+                    if (validClusters.length > maxReflectionsInSession) {
+                        maxReflectionsInSession = validClusters.length;
+                    }
+
+                    // Scale back and draw markers on main overlay
+                    const scaleX = overlayCanvas.width / ANALYSIS_SIZE;
+                    const scaleY = overlayCanvas.height / ANALYSIS_SIZE;
+
+                    validClusters.forEach(cluster => {
+                        const drawX = cluster.x * scaleX;
+                        const drawY = cluster.y * scaleY;
+
+                        // Draw targeting box
+                        ctx.beginPath();
+                        ctx.arc(drawX, drawY, 20, 0, 2 * Math.PI);
+                        ctx.strokeStyle = 'rgba(239, 68, 68, 0.8)'; // Red
+                        ctx.lineWidth = 2;
+                        ctx.stroke();
+
+                        ctx.beginPath();
+                        ctx.arc(drawX, drawY, 2, 0, 2 * Math.PI);
+                        ctx.fillStyle = 'rgba(250, 204, 21, 1)'; // Yellow center
+                        ctx.fill();
+                    });
+
+                } catch (e) {
+                    // Ignore errors if video is not ready
+                }
+
+                // Schedule next frame
+                analysisInterval = requestAnimationFrame(analyzeFrame);
+            }
+
+            // --- Local Storage History ---
+            function saveToHistory(reflections, durationSecs) {
+                const scan = {
+                    id: Date.now(),
+                    date: new Date().toISOString(),
+                    reflections: reflections,
+                    duration: durationSecs
+                };
+                
+                let history = JSON.parse(localStorage.getItem('lensguard_history') || '[]');
+                history.unshift(scan);
+                // Keep only last 10
+                if (history.length > 10) history = history.slice(0, 10);
+                
+                localStorage.setItem('lensguard_history', JSON.stringify(history));
+                loadHistory();
+            }
+
+            function loadHistory() {
+                const history = JSON.parse(localStorage.getItem('lensguard_history') || '[]');
+                historyList.innerHTML = '';
+                
+                if (history.length === 0) {
+                    historyList.innerHTML = '<li class="p-4 text-center text-sm text-slate-500 italic">No previous scans found.</li>';
+                    return;
+                }
+
+                history.forEach(scan => {
+                    const dateObj = new Date(scan.date);
+                    const formattedDate = dateObj.toLocaleDateString() + ' ' + dateObj.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                    
+                    const min = Math.floor(scan.duration / 60);
+                    const sec = scan.duration % 60;
+                    const durationStr = min > 0 ? `${min}m ${sec}s` : `${sec}s`;
+
+                    let alertColor = scan.reflections > 0 ? 'text-amber-400' : 'text-green-400';
+                    let alertIcon = scan.reflections > 0 ? 'fa-circle-exclamation' : 'fa-check-circle';
+
+                    const li = document.createElement('li');
+                    li.className = 'p-3 hover:bg-slate-700/30 transition-colors flex justify-between items-center';
+                    li.innerHTML = `
+                        <div class="flex flex-col">
+                            <span class="text-sm font-semibold text-slate-200">${formattedDate}</span>
+                            <span class="text-xs text-slate-400">Duration: ${durationStr}</span>
+                        </div>
+                        <div class="flex items-center gap-2 ${alertColor}">
+                            <span class="text-xs font-bold">${scan.reflections} flagged</span>
+                            <i class="fa-solid ${alertIcon}"></i>
+                        </div>
+                    `;
+                    historyList.appendChild(li);
+                });
+            }
+
+            clearHistoryBtn.addEventListener('click', () => {
+                if(confirm('Clear all local scan history?')) {
+                    localStorage.removeItem('lensguard_history');
+                    loadHistory();
+                }
+            });
+
+            // Prevent default behavior to ensure smooth interactions
+            document.addEventListener('touchmove', function(e) {
+                // Prevent overscroll/bounce effect on iOS if needed, but allow scroll within lists
+                if(!e.target.closest('#history-list')) {
+                    // e.preventDefault();
+                }
+            }, { passive: false });
+
+            // Help Modal Alert replacement
+            document.getElementById('help-btn').addEventListener('click', () => {
+                // Scroll to inspection guide
+                document.querySelector('.fa-book-open').scrollIntoView({ behavior: 'smooth' });
+            });
+            
+            // Adding specific CSS class to animate the spinner slowly
+            const style = document.createElement('style');
+            style.innerHTML = `
+                .animate-spin-slow {
+                    animation: spin 3s linear infinite;
+                }
+            `;
+            document.head.appendChild(style);
+        });
+    </script>
+</body>
+</html>
